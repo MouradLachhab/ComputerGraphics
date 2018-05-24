@@ -1,0 +1,250 @@
+// Textures
+GLuint gold, eyeColor, rock, white, red;
+
+// Shader program
+GLuint room1program, starProgram;
+
+// Objects
+Model *groundFirstHalf, *groundSecondHalf, *star, *rope, *lion, *eye;
+extern Model *door, *wall;
+extern float currentDoorRy;
+extern int mainRoom;
+extern GLint flipped[];
+// Basic Matrices
+extern mat4 projectionMatrix, modelToWorld, worldToView;
+
+// Object transformation matrices
+mat4 ropeT1, ropeT2, ropeS, identityM, lionT,lionS, eyeRy, eyeRz, eyeT, eyeS, doorT, reflectionRotationZ, flip;
+
+// Variables used for handling shooting Stars
+mat4 * shootingStarsPos[10];
+float starspeeds[10];
+int starCount = 0;
+
+// Light sources
+Point3D starColor[] = {{0.3f, 0.05f, 0.05f}, {1.0f, 1.0f, 1.0f}};
+GLint isDirectional[] = {0,1};
+GLint offset[] = {0};
+Point3D lightPositions[] = {
+		{60.0f, 60.0f, 60.0f},
+		{-100.0f, 5.0f, -100.0f}
+};
+Point3D flippedLight[] = {
+		{-60.0f, 60.0f, -60.0f},
+		{-100.0f, 5.0f, -100.0f}
+};
+GLfloat specularExponent[] = {20.0, 20.0};
+
+void initRoom1() {
+	// Load Objects
+	groundFirstHalf = LoadModelPlus("./objects/floor.obj");
+	groundSecondHalf = 	LoadModelPlus("./objects/floor2.obj");
+	star = LoadModelPlus("./objects/smallSphere.obj");
+	rope = LoadModelPlus("./objects/rope.obj");
+	lion = LoadModelPlus("./objects/lion.obj");
+	eye = LoadModelPlus("./objects/eye.obj");
+
+	// Load and compile shader
+	room1program = loadShaders("basic.vert", "basic.frag");
+	glUseProgram(room1program);
+	printError("init shader");
+
+	// Load Textures
+	LoadTGATextureSimple("./textures/gold.tga", &gold);
+	LoadTGATextureSimple("./textures/eye.tga", &eyeColor);
+	LoadTGATextureSimple("./textures/rock.tga", &rock);
+	LoadTGATextureSimple("./textures/white.tga", &white);
+	LoadTGATextureSimple("./textures/red.tga", &red);
+
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "projMatrix"), 1, GL_TRUE, projectionMatrix.m);
+
+	// Star components
+	glUniform3fv(glGetUniformLocation(room1program, "lightPositions"), 2, &lightPositions[0].x);
+	glUniform3fv(glGetUniformLocation(room1program, "starColor"), 2, &starColor[0].x);
+	glUniform1fv(glGetUniformLocation(room1program, "specularExponent"), 2, specularExponent);
+	glUniform1iv(glGetUniformLocation(room1program, "isDirectional"), 2, isDirectional);
+
+	starProgram = loadShaders("stars.vert", "stars.frag");
+	glUseProgram(starProgram);
+	glUniformMatrix4fv(glGetUniformLocation(starProgram, "projMatrix"), 1, GL_TRUE, projectionMatrix.m);
+
+
+	// Initialize transformation matrices
+	ropeT1 = T(0, -60.8, 0);
+	ropeT2 = T(0, 84.8, 0);
+	ropeS = S(3, 3, 3);
+	identityM = IdentityMatrix();
+	lionT =	T(0, 25, 0);
+	lionS = S(3, 3, 3);
+	eyeRy = Ry(5.2*M_PI/3);
+	eyeRz = Rz(5.7*M_PI/8);
+	eyeT = T(60, 60, 60);
+	eyeS = S(50,50,50);
+	doorT = T(0,0,2);
+	reflectionRotationZ = Rz(M_PI);		// Fake mirror effect
+}
+
+void shootingStars() {
+
+	int i;
+	if (starCount < 10) {																// Create new shooting stars if we have less than 10
+		for (i = 0; i < 11; ++i) {
+			if(shootingStarsPos[i] == NULL) {
+				shootingStarsPos[i] = (mat4*)malloc(sizeof(mat4));
+				*shootingStarsPos[i] = T(100, 50 + rand() % 100, rand() % 100);
+				starspeeds[i] = (3.0 + rand() % 7)/10;
+				starCount++;
+				break;
+			}
+		}
+	}
+
+	for (i = 0; i < starCount; ++i) {													// Move the stars && free stars that are too far
+		if(shootingStarsPos[i] != NULL) {
+			if((*shootingStarsPos[i]).m[11] < -50) {
+				free(shootingStarsPos[i]);
+				shootingStarsPos[i] = NULL;
+				starCount--;
+			}
+			else {
+				(*shootingStarsPos[i]).m[11] -= starspeeds[i];
+				(*shootingStarsPos[i]).m[7] -= starspeeds[i] * 0.66;
+			}
+		}
+	}
+}
+
+void drawStars() {
+	if (flipped[1])
+	{
+		flip = Ry(M_PI);
+	}
+	else
+	{
+
+		flip = IdentityMatrix();
+	}
+	glUseProgram(starProgram);
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "flip"), 1, GL_TRUE, flip.m);
+	glUniformMatrix4fv(glGetUniformLocation(starProgram, "worldToView"), 1, GL_TRUE, worldToView.m);
+	int i;
+	for (i = 0; i < starCount; ++i) {
+		if(shootingStarsPos[i] != NULL) {
+			glUniformMatrix4fv(glGetUniformLocation(starProgram, "modelToWorld"), 1, GL_TRUE, (*shootingStarsPos[i]).m);
+			DrawModel(star, starProgram, "inPosition", NULL, NULL);
+		}
+	}
+}
+
+void drawModels() {
+	glUseProgram(room1program);
+	int currentOffset;
+	if (flipped[1])
+	{
+		currentOffset = 0;
+		flip = Ry(M_PI);
+		glUniform3fv(glGetUniformLocation(room1program, "lightPositions"), 2, &flippedLight[0].x);
+
+	}
+	else
+	{
+		currentOffset = 1;
+		glUniform3fv(glGetUniformLocation(room1program, "lightPositions"), 2, &lightPositions[0].x);
+		flip = IdentityMatrix();
+	}
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "flip"), 1, GL_TRUE, flip.m);
+
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "worldToView"), 1, GL_TRUE, worldToView.m);
+	// Variables Used
+	mat4 transformation;
+	GLfloat time = (GLfloat)glutGet(GLUT_ELAPSED_TIME);							// Get Current Time
+
+	glBindTexture(GL_TEXTURE_2D, gold);											// Gold texture used for the rope and Lion head
+
+	// Rope
+	transformation = Mult(ropeT1, ropeS);										// Scaĺe it up and move it down for it's rotation around top point
+	transformation = Mult(Rx(M_PI/4.2*cos(time/1000)) ,transformation);			// Rotate around top point
+	transformation = Mult(ropeT2, transformation);								// Move it back up
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, transformation.m);
+	DrawModel(rope, room1program,"inPosition", "inNormal", "inTexCoord");
+
+	//Lion head
+	transformation = Mult(lionT, lionS);										// Move head up
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, transformation.m);
+	DrawModel(lion, room1program,"inPosition", "inNormal", "inTexCoord");
+
+	glBindTexture(GL_TEXTURE_2D, eyeColor);										// Eye texture
+
+	// Red Eye
+	transformation = Mult(eyeRz, eyeS);											// Scale it up and rotate it on the z axis
+	transformation = Mult(eyeRy, transformation);								// Rotate it on the y axis
+	transformation = Mult(eyeT, transformation);								// Move it into position
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, transformation.m);
+	DrawModel(eye, room1program,"inPosition", "inNormal", "inTexCoord");
+
+	glBindTexture(GL_TEXTURE_2D, rock);											// Rock texture for the wall and door(might change door)
+
+	// Wall && Door reflected
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, reflectionRotationZ.m);
+	DrawModel(wall, room1program, "inPosition", "inNormal", "inTexCoord");
+
+	// Before drawing the door, I want to make sure it doesnt go beyond the reflective floor
+	if(mainRoom == 1) {
+		enableStencil();
+		glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, identityM.m);
+		DrawModel(groundFirstHalf, room1program, "inPosition", "inNormal", "inTexCoord");
+		DrawModel(groundSecondHalf, room1program, "inPosition", "inNormal", "inTexCoord");
+		setupDraw();
+	}
+
+	glBindTexture(GL_TEXTURE_2D, eyeColor);										// Eye texture
+
+	// Red Eye
+	transformation = Mult(Transpose(eyeRz), eyeS);											// Scale it up and rotate it on the z axis
+	transformation = Mult(Transpose(eyeRy), transformation);								// Rotate it on the y axis
+	transformation = Mult(T(0, 60, 0), transformation);							// Move it up
+	transformation = Mult(reflectionRotationZ, transformation);					// rotate as a reflection
+	transformation = Mult(T(60, 0, 60), transformation);
+
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, transformation.m);
+	DrawModel(eye, room1program,"inPosition", "inNormal", "inTexCoord");
+
+	transformation = Mult(reflectionRotationZ,Ry(-currentDoorRy));
+	transformation = Mult(doorT, transformation);
+
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, transformation.m);
+	DrawModel(door, room1program, "inPosition", "inNormal", "inTexCoord");		// Door has eye texture on purpose
+
+	if(mainRoom == 1)
+		disableStencil();
+
+	glBindTexture(GL_TEXTURE_2D, white);										// White texture for the ground
+
+	// First half of the reflective ground
+	offset[0] = 0;																// offset 0 means the shader uses both light sources
+	glEnable(GL_BLEND);															// GL Blend for transparent effect
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_DST_ALPHA);
+	glUniform1iv(glGetUniformLocation(room1program, "offset"), 1, offset);
+	glUniformMatrix4fv(glGetUniformLocation(room1program, "modelToWorld"), 1, GL_TRUE, identityM.m);
+	DrawModel(groundFirstHalf, room1program, "inPosition", "inNormal", "inTexCoord");
+
+	// Second half that is in the shadow
+	offset[0] = currentOffset; 																// offset 1 means red light from the eye only to mimic shadow
+	glUniform1iv(glGetUniformLocation(room1program, "offset"), 1, offset);
+	DrawModel(groundSecondHalf, room1program, "inPosition", "inNormal", "inTexCoord");
+	glDisable(GL_BLEND);
+
+	// Reset the offset
+	offset[0] = 0;
+	glUniform1iv(glGetUniformLocation(room1program, "offset"), 1, offset);
+}
+
+void drawRoom1() {
+
+	shootingStars();
+
+	drawStars();
+
+	drawModels();
+
+}

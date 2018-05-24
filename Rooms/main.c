@@ -1,0 +1,516 @@
+#ifdef __APPLE__
+	#include <OpenGL/gl3.h>
+	// Linking hint for Lightweight IDE
+	// uses framework Cocoa
+#endif
+#include <stdlib.h>
+#include "MicroGlut.h"
+#include "GL_utilities.h"
+#include "VectorUtils3.h"
+#include "loadobj.h"
+#include "LoadTGA.h"
+#include "skybox.h"
+#include "stencil.h"
+#include "room1.h"
+#include "room2.h"
+#include "room3.h"
+
+
+#define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
+
+
+// Shader program
+GLuint skyboxprogram;
+
+// Basic Matrices
+mat4 projectionMatrix, modelToWorld;
+
+//Objects
+Model *wall, *door, *plane, *blob;
+
+// Variables for door rotation
+mat4 doorRy;
+float currentDoorRy;
+// Booleans used for the door animation and interaction
+bool open, opening, closing, goingThru, positiveX;
+
+// Window size and cursor coordinates
+GLfloat height = 1400.0;
+GLfloat width = 1400.0;
+GLfloat prevx = 0;
+GLfloat prevy = 0;
+
+// Variables for character movement
+vec3 p,l,u,v,a;
+mat4  worldToView;
+float speed = 0.35;
+float max_speed = 0.0001; //Max speed
+vec3 wellPos, monsterPos, monsterDir;
+
+// initial room
+int mainRoom = 3; // The room you are in
+int secondaryRoom = 1; //The other room
+int unavaiableRoom = 2; //This should be 2 later...
+int farLimit = 48;
+int sideLimit = 35;
+
+// Keeping track of the flip... the initial
+// main and secondary have to start different
+GLint flipped[] = {1, 0, 0, 1};
+double gravity[] = {-0.01, -0.01, -0.02, -0.05};
+mat4 main_flip;
+
+GLuint roomPrograms[4];
+
+vec3 lastPos;
+
+void init(void)
+{
+	// Load objects
+	wall = LoadModelPlus("./objects/justWall.obj");
+	door = LoadModelPlus("./objects/justDoor.obj");
+	plane = LoadModelPlus("./objects/plane.obj");
+
+
+	// GL inits
+	glClearColor(0.2,0.2,0.5,0);
+	glEnable(GL_DEPTH_TEST);
+	glDisable(GL_CULL_FACE);
+	printError("GL inits");
+
+	projectionMatrix = frustum(-0.1, 0.1, -0.1, 0.1, 0.2, 200.0);
+
+// look at initial position
+	p.x = -5;
+	p.y = 6;
+	p.z = 0;
+	l.x = 0;
+	l.y = 6;
+	l.z = 0;
+	v.x = 0;
+	v.y = 0;
+	v.z = 0;
+	a.x = 0;
+	a.y = 0;
+	a.z = 0;
+	lastPos = p;
+	wellPos.x = 30;
+	wellPos.y = 0;
+	wellPos.z = 0;
+	monsterPos.x = 30;
+	monsterPos.y = 2;
+	monsterPos.z = 0;
+	monsterDir.x = 0;
+	monsterDir.y = 0;
+	monsterDir.z = 0;
+	// Initíalize box for skyboxes
+	int i = 0;
+	for (i = 0; i < 6; i++)
+	{
+		box[i] = LoadDataToModel(
+			vertices[i],
+			NULL,
+			texcoord[i],
+			NULL,
+			indices[i],
+			4,
+			6);
+	}
+	// Initialize skybox
+	skyboxprogram = loadShaders("skybox.vert", "skybox.frag");
+	glUseProgram(skyboxprogram);
+	glUniformMatrix4fv(glGetUniformLocation(skyboxprogram, "projectionMatrix"), 1, GL_TRUE, projectionMatrix.m);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap);
+	loadTextures(0);
+
+	glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap1);
+	loadTextures(1);
+
+	glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap2);
+	loadTextures(2);
+
+	glBindTexture(GL_TEXTURE_CUBE_MAP, cubemap3);
+	loadTextures(3);
+
+	currentDoorRy = 0.0;
+	doorRy = Ry(0);
+
+	// Init booleans
+	open = false;
+	closing = false;
+	opening = false;
+	goingThru = false;
+	positiveX = false;
+}
+
+void characterMovement() {
+	double Normxz(vec3 v)
+	{
+		return sqrt(v.x * v.x + v.z * v.z);
+	}
+
+	// Build matrix
+	//right vector
+	u.x = worldToView.m[0];
+	u.y = worldToView.m[1];
+	u.z = worldToView.m[2];
+
+	//forward vector
+	vec3 f;
+	f.x = l.x - p.x;
+	f.y = 0;
+	f.z = l.z - p.z;
+	f = Normalize(f);
+
+	a.x = 0;
+	a.z = 0;
+	a.y = 0;
+	if (glutKeyIsDown(GLUT_KEY_W)) {
+		a.x = a.x + f.x;
+		a.z = a.z + f.z;
+	}
+	if (glutKeyIsDown(GLUT_KEY_S)) {
+		a.x = a.x - f.x;
+		a.z = a.z - f.z;
+	}
+	if (glutKeyIsDown(GLUT_KEY_D)) {
+		a.x = a.x + u.x;
+		a.z = a.z + u.z;
+	}
+	if (glutKeyIsDown(GLUT_KEY_A)) {
+		a.x = a.x - u.x;
+		a.z = a.z - u.z;
+	}
+	if (glutKeyIsDown(GLUT_KEY_ESC)) {
+		exit(0);
+	}
+	if(Norm(a) != 0)
+	{
+		a = Normalize(a);
+		v.x = v.x + a.x;
+		v.z = v.z + a.z;
+		if(Normxz(v) > max_speed * speed)
+		{
+			double n = (1/Normxz(v));
+			v.x = v.x * n;
+			v.z = v.z * n;
+		}
+	}
+	else
+	{
+		v.x = 0.8 * v.x;
+		v.z = 0.8 * v.z;
+	}
+	p.x = p.x + v.x * speed;
+	p.z = p.z + v.z * speed;
+	l.x = l.x + v.x * speed;
+	l.z = l.z + v.z * speed;
+
+	if (glutKeyIsDown(GLUT_STENCIL
+		))
+	{
+		if(p.y == 6)
+		{
+			v.y = 0.5;
+		}
+	}
+	if(p.y > 6)
+	{
+		a.y = gravity[mainRoom];
+	}
+	v.y = v.y + a.y;
+	p.y = p.y + v.y * speed;
+	l.y = l.y + v.y * speed;
+	if(p.y < 6)
+	{
+		p.y = 6;
+		v.y = 0;
+	}
+	a.y = 0;
+
+	if (glutKeyIsDown(GLUT_STENCIL)) {
+		p.y = p.y + max_speed;
+		l.y = l.y + max_speed;
+	}
+	if (glutKeyIsDown(GLUT_KEY_LEFT_SHIFT)) {
+		p.y = p.y - max_speed;
+		l.y = l.y - max_speed;
+	}
+
+	if(mainRoom == 3)
+	{
+		driveRoom3();
+	}
+
+	if(!goingThru && p.x < 0.20 && p.x > -0.20) {
+		int temp = mainRoom;
+		mainRoom = secondaryRoom;
+		secondaryRoom = temp;
+		goingThru = true;
+		positiveX = !positiveX;
+		if (mainRoom == 2) {
+			sideLimit = 50;
+			farLimit = 180;
+		}
+		else {
+			sideLimit = 35;
+			farLimit = 48;
+		}
+	}
+	if(goingThru && (p.x > 0.50 || p.x < -0.50)) {
+		goingThru = false;
+	}
+
+	// Make sure the player stays inside the boundaries
+	if(!open || p.z > 2 || p.z < -1.6 ) {
+		if(positiveX) {
+			if (p.x < 0.7)
+			{
+				p.x = 0.7;
+				v.x = 0;
+			}
+			if (p.x > farLimit)
+			{
+				p.x = farLimit;
+				v.x = 0;
+			}
+		}
+		else {
+			if (p.x < -farLimit)
+			{
+				p.x = -farLimit;
+				v.x = 0;
+			}
+			if (p.x > -1.3)
+			{
+				p.x = -1.3;
+				v.x = 0;
+			}
+		}
+	}
+	if (p.z < -sideLimit)
+	{
+		p.z = -sideLimit;
+		v.z = 0;
+	}
+	if (p.z > sideLimit)
+	{
+		p.z = sideLimit;
+		v.z = 0;
+	}
+	worldToView = lookAt(p.x, p.y, p.z,
+		l.x, l.y, l.z,
+		0, 1, 0);
+}
+
+void handleDoor() {
+
+	if (glutKeyIsDown(GLUT_KEY_E)) {													// Check if we are close enough to interact with the door
+		vec3 distance = VectorSub(SetVector(p.x, p.y, p.z), SetVector(0,6,0));
+		if((distance.x*distance.x + distance.y*distance.y + distance.z*distance.z) <= 64) {
+			if(!opening || !closing) {
+				if(open)
+					closing = true;
+				else
+					opening = true;
+			}
+		}
+	}
+
+	if (opening) {
+		currentDoorRy += M_PI/64;
+		doorRy = Ry(currentDoorRy);
+		if(currentDoorRy >= M_PI/2) {
+			opening = false;
+			open = true;
+		}
+	}
+	else if (closing) {
+		currentDoorRy -= M_PI/64;
+		doorRy = Ry(currentDoorRy);
+		if(currentDoorRy <= 0) {
+			closing = false;
+			open = false;
+			int temp;
+			temp = secondaryRoom;
+			secondaryRoom = unavaiableRoom;
+			unavaiableRoom = temp;
+			flipped[secondaryRoom] = flipped[temp];
+		}
+	}
+}
+
+void drawRoom(int room) {
+	switch(room) {
+
+	case 0: // Do nothing on buffer room, it's empty
+		break;
+	case 1:	drawRoom1();
+		break;
+	case 2:	room2Display(worldToView);
+		break;
+	case 3: drawRoom3();
+		break;
+	}
+}
+
+// Skybox based on the demo
+void drawSkybox() {
+
+	int i;
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	glDisable(GL_DEPTH_TEST);
+	glUseProgram(skyboxprogram);
+    glActiveTexture(GL_TEXTURE0);
+
+	mat4 camMatrix = worldToView;
+	camMatrix.m[3] = 0;
+	camMatrix.m[7] = 0;
+	camMatrix.m[11] = 0;
+	glUniformMatrix4fv(glGetUniformLocation(skyboxprogram, "camMatrix"), 1, GL_TRUE, camMatrix.m);
+	for (i = 0; i < 6; i++)															// Draw the main skybox first
+	{
+			glBindTexture(GL_TEXTURE_2D, skyboxes[mainRoom][i].texID);
+			DrawModel(box[i], skyboxprogram, "inPosition", NULL, "inTexCoord");
+	}
+
+	enableStencil();																// Stencil buffer is used to draw secondary skybox through the door frame
+
+    glUseProgram(roomPrograms[mainRoom]);
+	glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "flip"), 1, GL_TRUE, main_flip.m);
+    glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "worldToView"), 1, GL_TRUE, worldToView.m);
+    glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "modelToWorld"), 1, GL_TRUE, doorT.m);
+    DrawModel(door, roomPrograms[mainRoom], "inPosition", "inNormal", "inTexCoord");				// Draw door in the stencil buffer
+
+    setupDraw();
+    glUseProgram(skyboxprogram);
+	for (i = 0; i < 6; i++)															// Draw secondary skybox
+	{
+		glBindTexture(GL_TEXTURE_2D, skyboxes[secondaryRoom][i].texID);
+		DrawModel(box[i], skyboxprogram, "inPosition", NULL, "inTexCoord");
+	}
+
+	glEnable(GL_DEPTH_TEST);
+	drawRoom(secondaryRoom);
+
+	disableStencil();
+
+}
+
+void drawDoorAndWall() {
+	mat4 transformation;
+
+	// Right now the door and wall are rendered using the basic shader of room1
+	glUseProgram(roomPrograms[mainRoom]);
+	glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "flip"), 1, GL_TRUE, identityM.m); // Do not flip door or wall
+	glBindTexture(GL_TEXTURE_2D, rock);
+	glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "worldToView"), 1, GL_TRUE, worldToView.m);
+
+	// Wall
+	glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "modelToWorld"), 1, GL_TRUE, identityM.m);
+	DrawModel(wall, roomPrograms[mainRoom], "inPosition", "inNormal", "inTexCoord");
+
+	// Door
+	transformation = Mult(doorT, doorRy);
+
+	glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "modelToWorld"), 1, GL_TRUE, transformation.m);
+	DrawModel(door, roomPrograms[mainRoom], "inPosition", "inNormal", NULL);
+	glUniformMatrix4fv(glGetUniformLocation(roomPrograms[mainRoom], "flip"), 1, GL_TRUE, main_flip.m);
+}
+void display(void)
+{
+	// clear the screen
+
+	printError("pre display");
+
+	// General for everyroom
+	characterMovement();
+
+	if (flipped[mainRoom])
+	{
+		main_flip = Ry(M_PI);
+	}
+	else
+	{
+		main_flip = IdentityMatrix();
+	}
+
+	handleDoor();
+
+	drawSkybox();
+
+	drawDoorAndWall();
+	// Room specific
+	drawRoom(mainRoom);
+
+	printError("display 2");
+
+	glutSwapBuffers();
+}
+
+void timer(int i)
+{
+	glutTimerFunc(20, &timer, i);
+	glutPostRedisplay();
+}
+
+
+float cameraDivider = 60;
+
+void mouseInput(int x, int y) {
+
+	vec3 v;
+	mat3 worldToView3;
+
+	v.x = x*1.0-prevx*1.0;
+	v.y = prevy*1.0-y*1.0;
+	v.z = 0;
+
+	worldToView3 = mat4tomat3(worldToView);
+	v = MultMat3Vec3(InvertMat3(worldToView3), v);
+
+	l.x = l.x + v.x/cameraDivider;
+	l.y = l.y + v.y/cameraDivider;
+	l.z = l.z + v.z/cameraDivider;
+
+	worldToView = lookAt(p.x, p.y, p.z,
+		l.x, l.y, l.z,
+		0, 1, 0);
+
+	prevx = x;
+	prevy = y;
+
+
+	prevx = width / 2;
+	prevy = height / 2;
+	glutWarpPointer(prevx, prevy);
+}
+
+
+
+int main(int argc, char **argv)
+{
+	glutInit(&argc, argv);
+	glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH | GLUT_STENCIL);
+	glutInitContextVersion(3, 2);
+	glutInitWindowSize (width,height);
+	glutCreateWindow ("ROOMS");
+	glutDisplayFunc(display);
+	init ();
+	initRoom1();
+	room2Init(projectionMatrix);
+	initRoom3();
+	roomPrograms[0] = room1program;
+	roomPrograms[1] = room1program;
+    roomPrograms[2] = room2program;
+	// I wounder what should be here ...
+	roomPrograms[3] = room3program;
+	glutHideCursor();
+	glutTimerFunc(20, &timer, 0);
+	glutPassiveMotionFunc(mouseInput);
+	glutMainLoop();
+	exit(0);
+}
